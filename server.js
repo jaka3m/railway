@@ -1124,8 +1124,16 @@ wscat -c wss://${req.headers.host}/ID
 
     server.listen(port, '0.0.0.0', () => {
       console.log(`✅ Gateway server running on port ${port}`);
-      console.log(`🌐 HTTP endpoint: http://0.0.0.0:${port}`);
-      console.log(`🔗 WebSocket endpoint: ws://0.0.0.0:${port}`);
+
+      const domain = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL;
+      if (domain) {
+        console.log(`🌐 Public URL: https://${domain}`);
+        console.log(`🔗 WebSocket: wss://${domain}`);
+      } else {
+        console.log(`🌐 HTTP endpoint: http://0.0.0.0:${port}`);
+        console.log(`🔗 WebSocket endpoint: ws://0.0.0.0:${port}`);
+      }
+
       console.log(`🏥 Health check: http://0.0.0.0:${port}/health`);
       
       // Untuk Railway, pastikan kita listen pada 0.0.0.0
@@ -1150,11 +1158,6 @@ wscat -c wss://${req.headers.host}/ID
 // Di bagian akhir server.js, ubah:
 if (require.main === module) {
   const server = new GatewayServer();
-  
-  // Load environment variables
-  if (process.env.NODE_ENV !== 'production') {
-    require('dotenv').config();
-  }
   
   const port = process.env.PORT || 3000;
   server.start(port);
