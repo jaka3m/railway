@@ -817,9 +817,14 @@ function getHtml(hostname) {
 }
 
 async function websocketHandler(ws, req, pxip) {
-    let addressLog = "",
-        portLog = "";
-    const log = (info, event) => console.log(`[${addressLog}:${portLog}] ${info}`, event || "");
+    let addressLog = "INIT",
+        portLog = "0";
+    const log = (info, event) => {
+        const timestamp = new Date().toISOString();
+        console.log(`[${timestamp}] [${addressLog}:${portLog}] ${info}`, event || "");
+    };
+
+    log(`New connection from ${req.socket.remoteAddress}, path: ${req.url}, pxip: ${pxip}`);
 
     const earlyDataHeader = req.headers["sec-websocket-protocol"] || "";
     const readableWebSocketStream = createReadableWebSocketStream(ws, earlyDataHeader, log);
@@ -853,8 +858,13 @@ async function websocketHandler(ws, req, pxip) {
             }
 
             addressLog = protocolHeader.addressRemote;
-            portLog = `${protocolHeader.portRemote} -> ${protocolHeader.isUDP ? "UDP" : "TCP"}`;
-            if (protocolHeader.hasError) throw new Error(protocolHeader.message);
+            portLog = `${protocolHeader.portRemote} (${protocolHeader.isUDP ? "UDP" : "TCP"})`;
+            log(`Detected protocol. Target: ${addressLog}:${protocolHeader.portRemote}`);
+
+            if (protocolHeader.hasError) {
+                log(`Protocol header error: ${protocolHeader.message}`);
+                throw new Error(protocolHeader.message);
+            }
 
             if (protocolHeader.isUDP) {
                 if (protocolHeader.portRemote === DNS_PORT) isDNS = true;
@@ -1124,12 +1134,16 @@ async function remoteSocketToWS(remoteSocket, ws, responseHeader, retry, log) {
     await remoteSocket.readable.pipeTo(new WritableStream({
         async write(chunk, controller) {
             hasIncomingData = true;
-            if (ws.readyState !== WS_READY_STATE_OPEN) controller.error("ws closed");
+            if (ws.readyState !== WS_READY_STATE_OPEN) {
+                log("WebSocket not open, aborting remote read");
+                controller.error("ws closed");
+                return;
+            }
             if (header) {
                 const combined = concat(header, chunk);
-                ws.send(combined);
+                ws.send(combined, { binary: true });
                 header = null;
-            } else ws.send(chunk);
+            } else ws.send(chunk, { binary: true });
         },
         close() {
             log(`remoteConnection readable closed, hasData: ${hasIncomingData}`);
@@ -1149,36 +1163,69 @@ async function remoteSocketToWS(remoteSocket, ws, responseHeader, retry, log) {
 
 async function handleTCPOutbound(remoteSocket, addressRemote, portRemote, rawClientData, ws, responseHeader, log, pxip) {
     async function connectAndWrite(address, port) {
-        const tcpSocket = connect({
-            hostname: address,
-            port
-        });
-        remoteSocket.value = tcpSocket;
-        log(`connected to ${address}:${port}`);
-        const writer = tcpSocket.writable.getWriter();
-        await writer.write(rawClientData);
-        writer.releaseLock();
-        return tcpSocket;
+        log(`Connecting to ${address}:${port}...`);
+        try {
+            const tcpSocket = connect({
+                hostname: address,
+                port
+            });
+            remoteSocket.value = tcpSocket;
+
+            const writer = tcpSocket.writable.getWriter();
+            await writer.write(rawClientData);
+            writer.releaseLock();
+            log(`Connected and data sent to ${address}:${port}`);
+            return tcpSocket;
+        } catch (err) {
+            log(`Failed to connect/write to ${address}:${port}: ${err.message}`);
+            throw err;
+        }
     }
+
     async function retry() {
+        if (!pxip) {
+            log(`No pxip available for retry, closing.`);
+            safeCloseWebSocket(ws);
+            return;
+        }
+        log(`Retrying with pxip: ${pxip}`);
         const parts = pxip?.split(':') || [];
-        const tcpSocket = await connectAndWrite(
-            parts[0] || addressRemote,
-            parseInt(parts[1]) || portRemote
-        );
-        tcpSocket.closed.finally(() => safeCloseWebSocket(ws));
-        remoteSocketToWS(tcpSocket, ws, responseHeader, null, log);
+        try {
+            const tcpSocket = await connectAndWrite(
+                parts[0] || addressRemote,
+                parseInt(parts[1]) || portRemote
+            );
+            tcpSocket.closed.finally(() => {
+                log(`Retry socket closed`);
+                safeCloseWebSocket(ws);
+            });
+            remoteSocketToWS(tcpSocket, ws, responseHeader, null, log);
+        } catch (err) {
+            log(`Retry failed: ${err.message}`);
+            safeCloseWebSocket(ws);
+        }
     }
-    const tcpSocket = await connectAndWrite(addressRemote, portRemote);
-    remoteSocketToWS(tcpSocket, ws, responseHeader, retry, log);
+
+    try {
+        const tcpSocket = await connectAndWrite(addressRemote, portRemote);
+        tcpSocket.closed.catch(err => {
+            log(`Socket closed with error: ${err.message}`);
+        });
+        remoteSocketToWS(tcpSocket, ws, responseHeader, retry, log);
+    } catch (err) {
+        log(`Initial connection failed, attempting retry...`);
+        await retry();
+    }
 }
 
 function createReadableWebSocketStream(ws, earlyDataHeader, log) {
     let readableStreamCancel = false;
     return new ReadableStream({
         start(controller) {
-            ws.on("message", (data) => {
-                if (!readableStreamCancel) controller.enqueue(new Uint8Array(data));
+            ws.on("message", (data, isBinary) => {
+                if (readableStreamCancel) return;
+                const buffer = isBinary ? data : new Uint8Array(data);
+                controller.enqueue(new Uint8Array(buffer));
             });
             ws.on("close", () => {
                 safeCloseWebSocket(ws);
