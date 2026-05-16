@@ -13,11 +13,9 @@ const vmessUUID = atob('ZjI4MmI4NzgtODcxMS00NWExLThjNjktNTU2NDE3MjEyM2Mx');
 const str2arr = (str) => new TextEncoder().encode(str);
 const arr2str = (arr) => new TextDecoder().decode(arr);
 const concat = (...arrays) => {
-    const validArrays = arrays.filter(arr => arr != null);
-    const totalLength = validArrays.reduce((sum, arr) => sum + arr.length, 0);
-    const result = new Uint8Array(totalLength);
+    const result = new Uint8Array(arrays.reduce((sum, arr) => sum + arr.length, 0));
     let offset = 0;
-    for (const arr of validArrays) {
+    for (const arr of arrays) {
         result.set(arr, offset);
         offset += arr.length;
     }
@@ -297,15 +295,14 @@ function connect({ hostname, port }) {
     return {
         readable,
         writable,
-        closed: new Promise((resolve, reject) => {
+        closed: new Promise((resolve) => {
             socket.on('close', resolve);
-            socket.on('error', reject);
+            socket.on('error', resolve);
         })
     };
 }
 
-function getHtml(hostname, publicIp) {
-    const configHost = publicIp || hostname;
+function getHtml(hostname) {
     return `
 <!DOCTYPE html>
 <html lang="en" id="htmlRoot">
@@ -522,7 +519,6 @@ function getHtml(hostname, publicIp) {
 
         const uuid = atob('${btoa(vmessUUID)}');
         const host = "${hostname}";
-        const configHost = "${configHost}";
         const proxyListUrl = atob('${btoa(PROTOCOLS.PL_URL)}');
         const OBFS_PATH = atob('${btoa(PROTOCOLS.OBFS_PATH)}');
         const VMS_PRE = atob('${btoa(PROTOCOLS.VMS_PRE)}');
@@ -639,18 +635,18 @@ function getHtml(hostname, publicIp) {
 
         function generateVmess(proxy) {
             const path = OBFS_PATH + proxy.ip + "=" + proxy.port;
-            const vmessObj = { v: "2", ps: VMS_LBL + " " + proxy.country + " - " + proxy.isp, add: configHost, port: 443, id: uuid, aid: "0", scy: "zero", net: "ws", type: "none", host: host, path: path, tls: "tls", sni: host };
+            const vmessObj = { v: "2", ps: VMS_LBL + " " + proxy.country + " - " + proxy.isp, add: host, port: 443, id: uuid, aid: "0", scy: "zero", net: "ws", type: "none", host: host, path: path, tls: "tls", sni: host };
             return VMS_PRE + btoa(JSON.stringify(vmessObj));
         }
 
         function generateVless(proxy) {
             const path = encodeURIComponent(OBFS_PATH + proxy.ip + "=" + proxy.port);
-            return VLS_PRE + uuid + "@" + configHost + ":443?encryption=none&security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(VLS_LBL + " " + proxy.country);
+            return VLS_PRE + uuid + "@" + host + ":443?encryption=none&security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(VLS_LBL + " " + proxy.country);
         }
 
         function generateTrojan(proxy) {
             const path = encodeURIComponent(OBFS_PATH + proxy.ip + "=" + proxy.port);
-            return TRJ_PRE + uuid + "@" + configHost + ":443?security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(TRJ_LBL + " " + proxy.country);
+            return TRJ_PRE + uuid + "@" + host + ":443?security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(TRJ_LBL + " " + proxy.country);
         }
 
         function generateShadowsocks(proxy) {
@@ -658,7 +654,7 @@ function getHtml(hostname, publicIp) {
             const password = uuid;
             const encodedAuth = btoa(\`\${method}:\${password}\`);
             const path = encodeURIComponent(OBFS_PATH + proxy.ip + "=" + proxy.port);
-            const ssUrl = \`ss://\${encodedAuth}@\${configHost}:443?path=\${path}&security=tls&host=\${host}&type=ws&sni=\${host}#\${encodeURIComponent(SS_LBL + " " + proxy.country)}\`;
+            const ssUrl = \`ss://\${encodedAuth}@\${host}:443?path=\${path}&security=tls&host=\${host}&type=ws&sni=\${host}#\${encodeURIComponent(SS_LBL + " " + proxy.country)}\`;
             return ssUrl;
         }
 
@@ -821,14 +817,9 @@ function getHtml(hostname, publicIp) {
 }
 
 async function websocketHandler(ws, req, pxip) {
-    let addressLog = "INIT",
-        portLog = "0";
-    const log = (info, event) => {
-        const timestamp = new Date().toISOString();
-        console.log(`[${timestamp}] [${addressLog}:${portLog}] ${info}`, event || "");
-    };
-
-    log(`New connection from ${req.socket.remoteAddress}, path: ${req.url}, pxip: ${pxip}`);
+    let addressLog = "",
+        portLog = "";
+    const log = (info, event) => console.log(`[${addressLog}:${portLog}] ${info}`, event || "");
 
     const earlyDataHeader = req.headers["sec-websocket-protocol"] || "";
     const readableWebSocketStream = createReadableWebSocketStream(ws, earlyDataHeader, log);
@@ -838,15 +829,9 @@ async function websocketHandler(ws, req, pxip) {
     };
     let udpStreamWrite = null,
         isDNS = false;
-    let isProcessingHeader = false;
-    let headerQueue = [];
 
     readableWebSocketStream.pipeTo(new WritableStream({
         async write(chunk, controller) {
-            if (isProcessingHeader) {
-                headerQueue.push(chunk);
-                return;
-            }
             if (isDNS && udpStreamWrite) return udpStreamWrite(chunk);
             if (remoteSocketWrapper.value) {
                 const writer = remoteSocketWrapper.value.writable.getWriter();
@@ -855,7 +840,6 @@ async function websocketHandler(ws, req, pxip) {
                 return;
             }
 
-            isProcessingHeader = true;
             const bufferChunk = new Uint8Array(chunk);
             const protocol = await detectProtocol(bufferChunk);
             let protocolHeader;
@@ -869,13 +853,8 @@ async function websocketHandler(ws, req, pxip) {
             }
 
             addressLog = protocolHeader.addressRemote;
-            portLog = `${protocolHeader.portRemote} (${protocolHeader.isUDP ? "UDP" : "TCP"})`;
-            log(`Detected protocol. Target: ${addressLog}:${protocolHeader.portRemote}`);
-
-            if (protocolHeader.hasError) {
-                log(`Protocol header error: ${protocolHeader.message}`);
-                throw new Error(protocolHeader.message);
-            }
+            portLog = `${protocolHeader.portRemote} -> ${protocolHeader.isUDP ? "UDP" : "TCP"}`;
+            if (protocolHeader.hasError) throw new Error(protocolHeader.message);
 
             if (protocolHeader.isUDP) {
                 if (protocolHeader.portRemote === DNS_PORT) isDNS = true;
@@ -891,18 +870,8 @@ async function websocketHandler(ws, req, pxip) {
                 return;
             }
 
-            await handleTCPOutbound(remoteSocketWrapper, protocolHeader.addressRemote, protocolHeader.portRemote,
+            handleTCPOutbound(remoteSocketWrapper, protocolHeader.addressRemote, protocolHeader.portRemote,
                 protocolHeader.rawClientData, ws, protocolHeader.version, log, pxip);
-
-            isProcessingHeader = false;
-            while (headerQueue.length > 0) {
-                const nextChunk = headerQueue.shift();
-                if (remoteSocketWrapper.value) {
-                    const writer = remoteSocketWrapper.value.writable.getWriter();
-                    await writer.write(nextChunk);
-                    writer.releaseLock();
-                }
-            }
         },
         close() {
             log(`readableWebSocketStream closed`);
@@ -923,7 +892,7 @@ async function detectProtocol(buffer) {
         }
     }
     const uuidCheck = buffer.slice(1, 17);
-    const hexString = arrayBufferToHex(uuidCheck);
+    const hexString = arrayBufferToHex(uuidCheck.buffer);
     if (DETECTION_PATTERNS.UUID_V4_REGEX.test(hexString)) return PROTOCOLS.P2;
 
     return PROTOCOLS.P3;
@@ -1155,16 +1124,12 @@ async function remoteSocketToWS(remoteSocket, ws, responseHeader, retry, log) {
     await remoteSocket.readable.pipeTo(new WritableStream({
         async write(chunk, controller) {
             hasIncomingData = true;
-            if (ws.readyState !== WS_READY_STATE_OPEN) {
-                log("WebSocket not open, aborting remote read");
-                controller.error("ws closed");
-                return;
-            }
+            if (ws.readyState !== WS_READY_STATE_OPEN) controller.error("ws closed");
             if (header) {
                 const combined = concat(header, chunk);
-                ws.send(combined, { binary: true });
+                ws.send(combined);
                 header = null;
-            } else ws.send(chunk, { binary: true });
+            } else ws.send(chunk);
         },
         close() {
             log(`remoteConnection readable closed, hasData: ${hasIncomingData}`);
@@ -1184,77 +1149,36 @@ async function remoteSocketToWS(remoteSocket, ws, responseHeader, retry, log) {
 
 async function handleTCPOutbound(remoteSocket, addressRemote, portRemote, rawClientData, ws, responseHeader, log, pxip) {
     async function connectAndWrite(address, port) {
-        log(`Connecting to ${address}:${port}...`);
-        try {
-            const tcpSocket = connect({
-                hostname: address,
-                port
-            });
-            remoteSocket.value = tcpSocket;
-
-            const writer = tcpSocket.writable.getWriter();
-            await writer.write(rawClientData);
-            writer.releaseLock();
-            log(`Connected and data sent to ${address}:${port}`);
-            return tcpSocket;
-        } catch (err) {
-            log(`Failed to connect/write to ${address}:${port}: ${err.message}`);
-            throw err;
-        }
+        const tcpSocket = connect({
+            hostname: address,
+            port
+        });
+        remoteSocket.value = tcpSocket;
+        log(`connected to ${address}:${port}`);
+        const writer = tcpSocket.writable.getWriter();
+        await writer.write(rawClientData);
+        writer.releaseLock();
+        return tcpSocket;
     }
-
     async function retry() {
-        if (!pxip) {
-            log(`No pxip available for retry, closing.`);
-            safeCloseWebSocket(ws);
-            return;
-        }
-        log(`Retrying with pxip: ${pxip}`);
         const parts = pxip?.split(':') || [];
-        try {
-            const tcpSocket = await connectAndWrite(
-                parts[0] || addressRemote,
-                parseInt(parts[1]) || portRemote
-            );
-            tcpSocket.closed.finally(() => {
-                log(`Retry socket closed`);
-                safeCloseWebSocket(ws);
-            });
-            remoteSocketToWS(tcpSocket, ws, responseHeader, null, log);
-        } catch (err) {
-            log(`Retry failed: ${err.message}`);
-            safeCloseWebSocket(ws);
-        }
+        const tcpSocket = await connectAndWrite(
+            parts[0] || addressRemote,
+            parseInt(parts[1]) || portRemote
+        );
+        tcpSocket.closed.finally(() => safeCloseWebSocket(ws));
+        remoteSocketToWS(tcpSocket, ws, responseHeader, null, log);
     }
-
-    const hostname = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL;
-    const shouldRetryImmediately = pxip && (addressRemote === hostname || addressRemote === 'localhost' || addressRemote === '127.0.0.1');
-
-    if (shouldRetryImmediately) {
-        log(`Target matches gateway, skipping direct connect and using pxip: ${pxip}`);
-        await retry();
-    } else {
-        try {
-            const tcpSocket = await connectAndWrite(addressRemote, portRemote);
-            tcpSocket.closed.catch(err => {
-                log(`Socket closed with error: ${err.message}`);
-            });
-            remoteSocketToWS(tcpSocket, ws, responseHeader, retry, log);
-        } catch (err) {
-            log(`Initial connection failed, attempting retry...`);
-            await retry();
-        }
-    }
+    const tcpSocket = await connectAndWrite(addressRemote, portRemote);
+    remoteSocketToWS(tcpSocket, ws, responseHeader, retry, log);
 }
 
 function createReadableWebSocketStream(ws, earlyDataHeader, log) {
     let readableStreamCancel = false;
     return new ReadableStream({
         start(controller) {
-            ws.on("message", (data, isBinary) => {
-                if (readableStreamCancel) return;
-                const buffer = isBinary ? data : new Uint8Array(data);
-                controller.enqueue(new Uint8Array(buffer));
+            ws.on("message", (data) => {
+                if (!readableStreamCancel) controller.enqueue(new Uint8Array(data));
             });
             ws.on("close", () => {
                 safeCloseWebSocket(ws);
@@ -1349,19 +1273,6 @@ function safeCloseWebSocket(ws) {
 
 // Node.js HTTP Server Setup
 const port = process.env.PORT || 3000;
-let publicIp = '';
-
-async function fetchPublicIp() {
-    try {
-        const response = await fetch('https://api.ipify.org?format=json');
-        const data = await response.json();
-        publicIp = data.ip;
-        console.log(`[${new Date().toISOString()}] Detected Public IP: ${publicIp}`);
-    } catch (err) {
-        console.error(`[${new Date().toISOString()}] Failed to fetch public IP: ${err.message}`);
-    }
-}
-
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -1373,7 +1284,7 @@ const server = http.createServer((req, res) => {
 
     if (url.pathname === '/' && req.headers['upgrade'] !== 'websocket') {
         res.writeHead(200, { 'Content-Type': 'text/html;charset=UTF-8' });
-        res.end(getHtml(req.headers.host, publicIp));
+        res.end(getHtml(req.headers.host));
         return;
     }
 
@@ -1405,8 +1316,7 @@ wss.on('connection', (ws, req) => {
     }
 });
 
-server.listen(port, async () => {
-    await fetchPublicIp();
+server.listen(port, () => {
     const protocol = process.env.RAILWAY_STATIC_URL ? 'https' : 'http';
     const host = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL || `localhost:${port}`;
     console.log(`Railway Gateway Server is running on ${protocol}://${host}`);
