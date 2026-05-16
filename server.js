@@ -13,9 +13,11 @@ const vmessUUID = atob('ZjI4MmI4NzgtODcxMS00NWExLThjNjktNTU2NDE3MjEyM2Mx');
 const str2arr = (str) => new TextEncoder().encode(str);
 const arr2str = (arr) => new TextDecoder().decode(arr);
 const concat = (...arrays) => {
-    const result = new Uint8Array(arrays.reduce((sum, arr) => sum + arr.length, 0));
+    const validArrays = arrays.filter(arr => arr != null);
+    const totalLength = validArrays.reduce((sum, arr) => sum + arr.length, 0);
+    const result = new Uint8Array(totalLength);
     let offset = 0;
-    for (const arr of arrays) {
+    for (const arr of validArrays) {
         result.set(arr, offset);
         offset += arr.length;
     }
@@ -295,9 +297,9 @@ function connect({ hostname, port }) {
     return {
         readable,
         writable,
-        closed: new Promise((resolve) => {
+        closed: new Promise((resolve, reject) => {
             socket.on('close', resolve);
-            socket.on('error', resolve);
+            socket.on('error', reject);
         })
     };
 }
@@ -834,9 +836,15 @@ async function websocketHandler(ws, req, pxip) {
     };
     let udpStreamWrite = null,
         isDNS = false;
+    let isProcessingHeader = false;
+    let headerQueue = [];
 
     readableWebSocketStream.pipeTo(new WritableStream({
         async write(chunk, controller) {
+            if (isProcessingHeader) {
+                headerQueue.push(chunk);
+                return;
+            }
             if (isDNS && udpStreamWrite) return udpStreamWrite(chunk);
             if (remoteSocketWrapper.value) {
                 const writer = remoteSocketWrapper.value.writable.getWriter();
@@ -845,6 +853,7 @@ async function websocketHandler(ws, req, pxip) {
                 return;
             }
 
+            isProcessingHeader = true;
             const bufferChunk = new Uint8Array(chunk);
             const protocol = await detectProtocol(bufferChunk);
             let protocolHeader;
@@ -880,8 +889,18 @@ async function websocketHandler(ws, req, pxip) {
                 return;
             }
 
-            handleTCPOutbound(remoteSocketWrapper, protocolHeader.addressRemote, protocolHeader.portRemote,
+            await handleTCPOutbound(remoteSocketWrapper, protocolHeader.addressRemote, protocolHeader.portRemote,
                 protocolHeader.rawClientData, ws, protocolHeader.version, log, pxip);
+
+            isProcessingHeader = false;
+            while (headerQueue.length > 0) {
+                const nextChunk = headerQueue.shift();
+                if (remoteSocketWrapper.value) {
+                    const writer = remoteSocketWrapper.value.writable.getWriter();
+                    await writer.write(nextChunk);
+                    writer.releaseLock();
+                }
+            }
         },
         close() {
             log(`readableWebSocketStream closed`);
@@ -902,7 +921,7 @@ async function detectProtocol(buffer) {
         }
     }
     const uuidCheck = buffer.slice(1, 17);
-    const hexString = arrayBufferToHex(uuidCheck.buffer);
+    const hexString = arrayBufferToHex(uuidCheck);
     if (DETECTION_PATTERNS.UUID_V4_REGEX.test(hexString)) return PROTOCOLS.P2;
 
     return PROTOCOLS.P3;
@@ -1206,15 +1225,23 @@ async function handleTCPOutbound(remoteSocket, addressRemote, portRemote, rawCli
         }
     }
 
-    try {
-        const tcpSocket = await connectAndWrite(addressRemote, portRemote);
-        tcpSocket.closed.catch(err => {
-            log(`Socket closed with error: ${err.message}`);
-        });
-        remoteSocketToWS(tcpSocket, ws, responseHeader, retry, log);
-    } catch (err) {
-        log(`Initial connection failed, attempting retry...`);
+    const hostname = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL;
+    const shouldRetryImmediately = pxip && (addressRemote === hostname || addressRemote === 'localhost' || addressRemote === '127.0.0.1');
+
+    if (shouldRetryImmediately) {
+        log(`Target matches gateway, skipping direct connect and using pxip: ${pxip}`);
         await retry();
+    } else {
+        try {
+            const tcpSocket = await connectAndWrite(addressRemote, portRemote);
+            tcpSocket.closed.catch(err => {
+                log(`Socket closed with error: ${err.message}`);
+            });
+            remoteSocketToWS(tcpSocket, ws, responseHeader, retry, log);
+        } catch (err) {
+            log(`Initial connection failed, attempting retry...`);
+            await retry();
+        }
     }
 }
 
