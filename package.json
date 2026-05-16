@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Proxy Gateway dengan WebSocket support untuk Railway",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
@@ -23,6 +24,6 @@
     "websocket",
     "railway"
   ],
-  "author": "Kuncung",
+  "author": "Geo",
   "license": "MIT"
 }
