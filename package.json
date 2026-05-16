@@ -10,9 +10,10 @@
     "clean": "rm -rf node_modules package-lock.json"
   },
   "dependencies": {
-    "node-fetch": "^2.7.0",
-    "ws": "^8.14.2"
+    "ws": "^8.14.2",
+    "node-fetch": "^2.7.0"
   },
+  "devDependencies": {},
   "engines": {
     "node": ">=16.0.0",
     "npm": ">=7.0.0"
