@@ -304,7 +304,8 @@ function connect({ hostname, port }) {
     };
 }
 
-function getHtml(hostname) {
+function getHtml(hostname, publicIp) {
+    const configHost = publicIp || hostname;
     return `
 <!DOCTYPE html>
 <html lang="en" id="htmlRoot">
@@ -521,6 +522,7 @@ function getHtml(hostname) {
 
         const uuid = atob('${btoa(vmessUUID)}');
         const host = "${hostname}";
+        const configHost = "${configHost}";
         const proxyListUrl = atob('${btoa(PROTOCOLS.PL_URL)}');
         const OBFS_PATH = atob('${btoa(PROTOCOLS.OBFS_PATH)}');
         const VMS_PRE = atob('${btoa(PROTOCOLS.VMS_PRE)}');
@@ -637,18 +639,18 @@ function getHtml(hostname) {
 
         function generateVmess(proxy) {
             const path = OBFS_PATH + proxy.ip + "=" + proxy.port;
-            const vmessObj = { v: "2", ps: VMS_LBL + " " + proxy.country + " - " + proxy.isp, add: host, port: 443, id: uuid, aid: "0", scy: "zero", net: "ws", type: "none", host: host, path: path, tls: "tls", sni: host };
+            const vmessObj = { v: "2", ps: VMS_LBL + " " + proxy.country + " - " + proxy.isp, add: configHost, port: 443, id: uuid, aid: "0", scy: "zero", net: "ws", type: "none", host: host, path: path, tls: "tls", sni: host };
             return VMS_PRE + btoa(JSON.stringify(vmessObj));
         }
 
         function generateVless(proxy) {
             const path = encodeURIComponent(OBFS_PATH + proxy.ip + "=" + proxy.port);
-            return VLS_PRE + uuid + "@" + host + ":443?encryption=none&security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(VLS_LBL + " " + proxy.country);
+            return VLS_PRE + uuid + "@" + configHost + ":443?encryption=none&security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(VLS_LBL + " " + proxy.country);
         }
 
         function generateTrojan(proxy) {
             const path = encodeURIComponent(OBFS_PATH + proxy.ip + "=" + proxy.port);
-            return TRJ_PRE + uuid + "@" + host + ":443?security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(TRJ_LBL + " " + proxy.country);
+            return TRJ_PRE + uuid + "@" + configHost + ":443?security=tls&type=ws&host=" + host + "&path=" + path + "&sni=" + host + "#" + encodeURIComponent(TRJ_LBL + " " + proxy.country);
         }
 
         function generateShadowsocks(proxy) {
@@ -656,7 +658,7 @@ function getHtml(hostname) {
             const password = uuid;
             const encodedAuth = btoa(\`\${method}:\${password}\`);
             const path = encodeURIComponent(OBFS_PATH + proxy.ip + "=" + proxy.port);
-            const ssUrl = \`ss://\${encodedAuth}@\${host}:443?path=\${path}&security=tls&host=\${host}&type=ws&sni=\${host}#\${encodeURIComponent(SS_LBL + " " + proxy.country)}\`;
+            const ssUrl = \`ss://\${encodedAuth}@\${configHost}:443?path=\${path}&security=tls&host=\${host}&type=ws&sni=\${host}#\${encodeURIComponent(SS_LBL + " " + proxy.country)}\`;
             return ssUrl;
         }
 
@@ -1347,6 +1349,19 @@ function safeCloseWebSocket(ws) {
 
 // Node.js HTTP Server Setup
 const port = process.env.PORT || 3000;
+let publicIp = '';
+
+async function fetchPublicIp() {
+    try {
+        const response = await fetch('https://api.ipify.org?format=json');
+        const data = await response.json();
+        publicIp = data.ip;
+        console.log(`[${new Date().toISOString()}] Detected Public IP: ${publicIp}`);
+    } catch (err) {
+        console.error(`[${new Date().toISOString()}] Failed to fetch public IP: ${err.message}`);
+    }
+}
+
 const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
@@ -1358,7 +1373,7 @@ const server = http.createServer((req, res) => {
 
     if (url.pathname === '/' && req.headers['upgrade'] !== 'websocket') {
         res.writeHead(200, { 'Content-Type': 'text/html;charset=UTF-8' });
-        res.end(getHtml(req.headers.host));
+        res.end(getHtml(req.headers.host, publicIp));
         return;
     }
 
@@ -1390,7 +1405,8 @@ wss.on('connection', (ws, req) => {
     }
 });
 
-server.listen(port, () => {
+server.listen(port, async () => {
+    await fetchPublicIp();
     const protocol = process.env.RAILWAY_STATIC_URL ? 'https' : 'http';
     const host = process.env.RAILWAY_PUBLIC_DOMAIN || process.env.RAILWAY_STATIC_URL || `localhost:${port}`;
     console.log(`Railway Gateway Server is running on ${protocol}://${host}`);
